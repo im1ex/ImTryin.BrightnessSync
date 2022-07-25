@@ -16,9 +16,9 @@ namespace ImTryin.BrightnessSync;
 public class ActualService : IActualService
 {
     private List<MonitorOptions>? _appSettings;
-    private Timer _timer = null!;
-    private ManagementEventWatcher _deviceChangeEventWatcher = null!;
-    private ManagementEventWatcher _brightnessEventWatcher = null!;
+    private Timer? _timer;
+    private ManagementEventWatcher? _deviceChangeEventWatcher;
+    private ManagementEventWatcher? _brightnessEventWatcher;
 
     public bool Start(bool runningAsService)
     {
@@ -59,13 +59,26 @@ public class ActualService : IActualService
 
     public void Stop()
     {
-        _brightnessEventWatcher.Stop();
-        _brightnessEventWatcher.Dispose();
+        if (_brightnessEventWatcher != null)
+        {
+            _brightnessEventWatcher.Stop();
+            _brightnessEventWatcher.Dispose();
+            _brightnessEventWatcher = null;
+        }
 
-        _deviceChangeEventWatcher.Stop();
-        _deviceChangeEventWatcher.Dispose();
+        if (_deviceChangeEventWatcher != null)
+        {
+            _deviceChangeEventWatcher.Stop();
+            _deviceChangeEventWatcher.Dispose();
+            _deviceChangeEventWatcher = null;
+        }
 
-        _timer.Dispose();
+        if (_timer != null)
+        {
+            _timer.Change(-1, -1);
+            _timer.Dispose();
+            _timer = null;
+        }
     }
 
     private void GenerateDummyConfig(string appSettingsPath)
@@ -97,7 +110,7 @@ public class ActualService : IActualService
 
         MonitorApi.ClearDeviceCapabilitiesStringCache();
 
-        _timer.Change(3000, -1);
+        _timer!.Change(3000, -1);
     }
 
     private void OnBrightnessEvent(object sender, EventArrivedEventArgs e)
@@ -106,7 +119,7 @@ public class ActualService : IActualService
         Console.WriteLine("{0:O} OnBrightnessEvent {1} = {2}", properties["TIME_CREATED"].ReadDateTimeFromUInt64(), properties["InstanceName"].Value,
             properties["Brightness"].Value);
 
-        _timer.Change(500, -1);
+        _timer!.Change(500, -1);
     }
 
     private void OnSync(object? state)
