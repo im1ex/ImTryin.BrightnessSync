@@ -1,5 +1,4 @@
-﻿using System.ServiceProcess;
-using ImTryin.WindowsConsoleService;
+﻿using ImTryin.WindowsConsoleService;
 
 namespace ImTryin.BrightnessSync;
 
@@ -7,6 +6,12 @@ internal class Program
 {
     public static void Main(string[] args)
     {
+        if (args.Length == 1 && args[0].ToLowerInvariant() == "/manual")
+        {
+            Manual.Run();
+            return;
+        }
+
         ServiceApplication.Run(
             args,
             new ServiceInfo

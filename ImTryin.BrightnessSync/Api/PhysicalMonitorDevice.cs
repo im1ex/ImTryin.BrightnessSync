@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace BrightnessSync.Api;
+namespace ImTryin.BrightnessSync.Api;
 
 internal class PhysicalMonitorDevice
 {

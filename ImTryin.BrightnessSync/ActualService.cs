@@ -2,13 +2,11 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Management;
 using System.Reflection;
 using System.Text.Json;
 using System.Threading;
-using BrightnessSync.Api;
-using BrightnessSync.AppSettings;
-using BrightnessSync.Extensions;
+using ImTryin.BrightnessSync.Api;
+using ImTryin.BrightnessSync.AppSettings;
 using ImTryin.WindowsConsoleService;
 
 namespace ImTryin.BrightnessSync;
@@ -16,9 +14,9 @@ namespace ImTryin.BrightnessSync;
 public class ActualService : IActualService
 {
     private List<MonitorOptions>? _appSettings;
+    private MonitorCollection? _monitorCollection;
+    private bool _refresh;
     private Timer? _timer;
-    private ManagementEventWatcher? _deviceChangeEventWatcher;
-    private ManagementEventWatcher? _brightnessEventWatcher;
 
     public bool Start(bool runningAsService)
     {
@@ -42,15 +40,12 @@ public class ActualService : IActualService
 
         // ToDo: validate app settings more?
 
+        _monitorCollection = new MonitorCollection();
+
         _timer = new Timer(OnSync);
 
-        _deviceChangeEventWatcher = new ManagementEventWatcher("\\\\.\\ROOT\\CIMV2", "SELECT * FROM Win32_DeviceChangeEvent");
-        _deviceChangeEventWatcher.EventArrived += OnDeviceChangeEvent;
-        _deviceChangeEventWatcher.Start();
-
-        _brightnessEventWatcher = new ManagementEventWatcher("\\\\.\\ROOT\\WMI", "SELECT * FROM WmiMonitorBrightnessEvent");
-        _brightnessEventWatcher.EventArrived += OnBrightnessEvent;
-        _brightnessEventWatcher.Start();
+        _monitorCollection.BrightnessChanged += OnBrightnessChanged;
+        _monitorCollection.DeviceChanged += OnDeviceChanged;
 
         OnSync(null);
 
@@ -59,18 +54,10 @@ public class ActualService : IActualService
 
     public void Stop()
     {
-        if (_brightnessEventWatcher != null)
+        if (_monitorCollection != null)
         {
-            _brightnessEventWatcher.Stop();
-            _brightnessEventWatcher.Dispose();
-            _brightnessEventWatcher = null;
-        }
-
-        if (_deviceChangeEventWatcher != null)
-        {
-            _deviceChangeEventWatcher.Stop();
-            _deviceChangeEventWatcher.Dispose();
-            _deviceChangeEventWatcher = null;
+            _monitorCollection.BrightnessChanged -= OnBrightnessChanged;
+            _monitorCollection.DeviceChanged -= OnDeviceChanged;
         }
 
         if (_timer != null)
@@ -79,21 +66,26 @@ public class ActualService : IActualService
             _timer.Dispose();
             _timer = null;
         }
+
+        if (_monitorCollection != null)
+        {
+            _monitorCollection.Dispose();
+            _monitorCollection = null;
+        }
     }
 
     private void GenerateDummyConfig(string appSettingsPath)
     {
         var appSettings = new List<MonitorOptions>();
 
-        using var monitorIdSearcher = new ManagementObjectSearcher("\\\\.\\ROOT\\WMI", "SELECT * FROM WmiMonitorID");
-        using var monitorIdObjects = monitorIdSearcher.Get();
-        foreach (var monitorIdObject in monitorIdObjects)
+        using var monitorCollection = new MonitorCollection();
+        foreach (var monitorInstance in monitorCollection.MonitorInstances)
         {
             appSettings.Add(new MonitorOptions
             {
-                ManufacturerName = monitorIdObject.Properties["ManufacturerName"].ReadStringFromUInt16ArrayValue(),
-                ProductCodeId = monitorIdObject.Properties["ProductCodeID"].ReadStringFromUInt16ArrayValue(),
-                SerialNumberId = monitorIdObject.Properties["SerialNumberID"].ReadStringFromUInt16ArrayValue()
+                ManufacturerName = monitorInstance.ManufacturerName,
+                ProductCodeId = monitorInstance.ProductCodeId,
+                SerialNumberId = monitorInstance.SerialNumberId
             });
         }
 
@@ -103,73 +95,72 @@ public class ActualService : IActualService
         Console.WriteLine("Dummy config file generated. Tune it and re-run application.");
     }
 
-    private void OnDeviceChangeEvent(object sender, EventArrivedEventArgs e)
+    private void OnBrightnessChanged(object sender, MonitorInstance e)
     {
-        var properties = e.NewEvent.Properties;
-        Console.WriteLine("{0:O} OnDeviceChangeEvent {1}", properties["TIME_CREATED"].ReadDateTimeFromUInt64(), properties["EventType"].Value);
-
-        MonitorApi.ClearDeviceCapabilitiesStringCache();
-
-        _timer!.Change(3000, -1);
-    }
-
-    private void OnBrightnessEvent(object sender, EventArrivedEventArgs e)
-    {
-        var properties = e.NewEvent.Properties;
-        Console.WriteLine("{0:O} OnBrightnessEvent {1} = {2}", properties["TIME_CREATED"].ReadDateTimeFromUInt64(), properties["InstanceName"].Value,
-            properties["Brightness"].Value);
+        Console.WriteLine("{0:O} [BrightnessChanged] Waiting 0.5 sec before sync...", DateTime.Now);
 
         _timer!.Change(500, -1);
     }
 
+    private void OnDeviceChanged(object sender, EventArgs e)
+    {
+        Console.WriteLine("{0:O} [DeviceChanged] Waiting 3 sec before sync...", DateTime.Now);
+
+        _refresh = true;
+
+        _timer!.Change(3000, -1);
+    }
+
     private void OnSync(object? state)
     {
-        Console.WriteLine("{0:O} OnSync started...", DateTime.Now);
+        Console.WriteLine("{0:O} [OnSync] Started...", DateTime.Now);
 
-        Console.WriteLine("{0:O} [OnSync] Enumerating WMI monitors...", DateTime.Now);
+        if (_refresh)
+        {
+            _monitorCollection!.Refresh();
 
-        using var monitorIdSearcher = new ManagementObjectSearcher("\\\\.\\ROOT\\WMI", "SELECT * FROM WmiMonitorID");
-        using var monitorIdCollection = monitorIdSearcher.Get();
+            _refresh = false;
+        }
 
         var usedInstanceNames = new HashSet<string>();
 
-        var optionsAndInstanceNames = _appSettings
+        var optionsAndInstances = _appSettings!
             .Select(monitorOptions =>
             {
-                var instanceNames = new List<string>();
+                var instances = new List<MonitorInstance>();
 
-                foreach (var monitorIdObject in monitorIdCollection)
+                foreach (var monitorInstance in _monitorCollection!.MonitorInstances)
                 {
-                    var instanceName = (string) monitorIdObject.Properties["InstanceName"].Value;
+                    var instanceName = monitorInstance.InstanceName;
 
                     if (usedInstanceNames.Contains(instanceName))
                         continue;
 
-                    if (monitorIdObject.Properties["ManufacturerName"].ReadStringFromUInt16ArrayValue().Contains(monitorOptions.ManufacturerName) &&
-                        monitorIdObject.Properties["ProductCodeID"].ReadStringFromUInt16ArrayValue().Contains(monitorOptions.ProductCodeId) &&
-                        monitorIdObject.Properties["SerialNumberID"].ReadStringFromUInt16ArrayValue().Contains(monitorOptions.SerialNumberId))
+                    if (monitorInstance.ManufacturerName.Contains(monitorOptions.ManufacturerName) &&
+                        monitorInstance.ProductCodeId.Contains(monitorOptions.ProductCodeId) &&
+                        monitorInstance.SerialNumberId.Contains(monitorOptions.SerialNumberId))
                     {
                         usedInstanceNames.Add(instanceName);
-                        instanceNames.Add(instanceName);
+                        instances.Add(monitorInstance);
                     }
                 }
 
-                return new {MonitorOptions = monitorOptions, InstanceNames = instanceNames};
+                return new {MonitorOptions = monitorOptions, Instances = instances};
             })
             .ToList();
 
-        if (optionsAndInstanceNames[0].InstanceNames.Count == 0)
+        if (optionsAndInstances.Count == 0 || optionsAndInstances[0].Instances.Count == 0)
             return;
 
-        Console.WriteLine("{0:O} [OnSync] Enumerating Win32 API monitors...", DateTime.Now);
-        var physicalMonitorDevices = MonitorApi.GetPhysicalMonitorDevices();
-
         Console.WriteLine("{0:O} [OnSync] Getting main monitor brightness...", DateTime.Now);
-        var mainOptions = optionsAndInstanceNames[0].MonitorOptions;
+        var mainOptions = optionsAndInstances[0].MonitorOptions;
 
-        var mainInstanceName = optionsAndInstanceNames[0].InstanceNames[0];
+        var mainInstance = optionsAndInstances[0].Instances[0];
 
-        var currentBrightness = GetBrightness(mainInstanceName, physicalMonitorDevices);
+        var currentBrightness = mainInstance.Brightness;
+
+        Console.WriteLine("{0:O} [OnSync] Main monitor brightness set to {1}", DateTime.Now, currentBrightness);
+
         var newBrightness = currentBrightness < mainOptions.Min
             ? mainOptions.Min
             : mainOptions.Max < currentBrightness
@@ -180,94 +171,28 @@ public class ActualService : IActualService
         {
             Console.WriteLine("{0:O} [OnSync] Updating main monitor brightness to {1}...", DateTime.Now, newBrightness);
 
-            SetBrightness(mainInstanceName, newBrightness, physicalMonitorDevices);
+            mainInstance.Brightness = newBrightness;
         }
 
-        foreach (var optionsAndInstanceName in optionsAndInstanceNames)
+        foreach (var optionsAndInstance in optionsAndInstances)
         {
-            var anotherOptions = optionsAndInstanceName.MonitorOptions;
+            var anotherOptions = optionsAndInstance.MonitorOptions;
 
             var anotherBrightness = (byte) (anotherOptions.Min +
                                             (anotherOptions.Max - anotherOptions.Min) * (newBrightness - mainOptions.Min) /
                                             (mainOptions.Max - mainOptions.Min));
 
-            foreach (var anotherInstanceName in optionsAndInstanceName.InstanceNames)
+            foreach (var anotherInstance in optionsAndInstance.Instances)
             {
-                if (anotherInstanceName != mainInstanceName)
+                if (anotherInstance != mainInstance)
                 {
                     Console.WriteLine("{0:O} [OnSync] Updating another monitor brightness to {1}...", DateTime.Now, anotherBrightness);
 
-                    SetBrightness(anotherInstanceName, anotherBrightness, physicalMonitorDevices);
+                    anotherInstance.Brightness = anotherBrightness;
                 }
             }
         }
 
-        foreach (var physicalMonitorDevice in physicalMonitorDevices)
-            MonitorApi.DestroyPhysicalMonitorInternal(physicalMonitorDevice.PhysicalMonitorHandle);
-
-        Console.WriteLine("{0:O} OnSync finished!", DateTime.Now);
-    }
-
-    private byte GetBrightness(string instanceName, List<PhysicalMonitorDevice> physicalMonitorDevices)
-    {
-        using var monitorBrightnessSearcher = new ManagementObjectSearcher("\\\\.\\ROOT\\WMI",
-            "SELECT * FROM WmiMonitorBrightness WHERE InstanceName='" + instanceName.Replace("\\", "\\\\") + "'");
-
-        using var monitorBrightnessCollection = monitorBrightnessSearcher.Get();
-
-        foreach (ManagementBaseObject monitorBrightnessObject in monitorBrightnessCollection)
-        {
-            var currentBrightness = (byte) monitorBrightnessObject.Properties["CurrentBrightness"].Value;
-
-            monitorBrightnessObject.Dispose();
-
-            return currentBrightness;
-        }
-
-
-        var physicalMonitorDevice = FindPhysicalMonitorInfo(instanceName, physicalMonitorDevices);
-
-        if (physicalMonitorDevice != null && physicalMonitorDevice.CapabilitiesString != string.Empty)
-        {
-            MonitorApi.GetMonitorBrightness(physicalMonitorDevice.PhysicalMonitorHandle, out _, out var currentBrightness, out _);
-
-            return (byte) currentBrightness;
-        }
-
-        return 0;
-    }
-
-    private void SetBrightness(string instanceName, byte brightness, List<PhysicalMonitorDevice> physicalMonitorDevices)
-    {
-        using var monitorBrightnessMethodsSearcher = new ManagementObjectSearcher("\\\\.\\ROOT\\WMI",
-            "SELECT * FROM WmiMonitorBrightnessMethods WHERE InstanceName='" + instanceName.Replace("\\", "\\\\") + "'");
-
-        using var monitorBrightnessMethodsCollection = monitorBrightnessMethodsSearcher.Get();
-
-        foreach (ManagementObject monitorBrightnessMethodsObject in monitorBrightnessMethodsCollection)
-        {
-            monitorBrightnessMethodsObject.InvokeMethod("WmiSetBrightness", new object[]
-            {
-                /* timeout in seconds */ 1, brightness
-            });
-
-            monitorBrightnessMethodsObject.Dispose();
-
-            return;
-        }
-
-        var physicalMonitorDevice = FindPhysicalMonitorInfo(instanceName, physicalMonitorDevices);
-
-        if (physicalMonitorDevice != null && physicalMonitorDevice.CapabilitiesString != string.Empty)
-            MonitorApi.SetMonitorBrightness(physicalMonitorDevice.PhysicalMonitorHandle, brightness);
-    }
-
-    private PhysicalMonitorDevice? FindPhysicalMonitorInfo(string instanceName, List<PhysicalMonitorDevice> physicalMonitorDevices)
-    {
-        var deviceId = instanceName.EndsWith("_0")
-            ? "\\\\?\\" + instanceName.Substring(0, instanceName.Length - 2).Replace("\\", "#") + "#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}"
-            : throw new NotSupportedException("Check this case!");
-
-        return physicalMonitorDevices.Find(x => x.DeviceId == deviceId);
+        Console.WriteLine("{0:O} [OnSync] Finished!", DateTime.Now);
     }
 }

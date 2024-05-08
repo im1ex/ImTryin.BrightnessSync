@@ -2,7 +2,7 @@
 using System.Management;
 using System.Text;
 
-namespace BrightnessSync.Extensions;
+namespace ImTryin.BrightnessSync.Extensions;
 
 public static class PropertyDataExtensions
 {

@@ -1,4 +1,4 @@
-﻿namespace BrightnessSync.AppSettings;
+﻿namespace ImTryin.BrightnessSync.AppSettings;
 
 public class MonitorOptions
 {
