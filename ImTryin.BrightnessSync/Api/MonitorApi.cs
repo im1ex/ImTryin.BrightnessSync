@@ -103,10 +103,8 @@ internal static class MonitorApi
         __deviceCapabilitiesStringCache.Clear();
     }
 
-    public static List<PhysicalMonitorDevice> GetPhysicalMonitorDevices()
+    public static IEnumerable<PhysicalMonitorDevice> GetPhysicalMonitorDevices()
     {
-        var physicalMonitorDeviceInfos = new List<PhysicalMonitorDevice>();
-
         var displayDevice = new DisplayDevice();
         for (int i = 0; EnumDisplayDevices(null, i, ref displayDevice, 0); i++)
         {
@@ -141,11 +139,9 @@ internal static class MonitorApi
                     return asciiCapabilitiesStringBuilder.ToString();
                 });
 
-                physicalMonitorDeviceInfos.Add(new PhysicalMonitorDevice(deviceId, physicalMonitorHandle, capabilitiesString));
+                yield return new PhysicalMonitorDevice(deviceId, physicalMonitorHandle, capabilitiesString);
             }
         }
-
-        return physicalMonitorDeviceInfos;
     }
 
 

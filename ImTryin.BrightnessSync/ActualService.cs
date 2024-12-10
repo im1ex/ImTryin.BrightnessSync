@@ -90,7 +90,7 @@ public class ActualService : IActualService
         }
 
         using (var fileStream = File.Create(appSettingsPath))
-            JsonSerializer.Serialize(fileStream, appSettings, new JsonSerializerOptions {WriteIndented = true});
+            JsonSerializer.Serialize(fileStream, appSettings, new JsonSerializerOptions { WriteIndented = true });
 
         Console.WriteLine("Dummy config file generated. Tune it and re-run application.");
     }
@@ -145,7 +145,7 @@ public class ActualService : IActualService
                     }
                 }
 
-                return new {MonitorOptions = monitorOptions, Instances = instances};
+                return new { MonitorOptions = monitorOptions, Instances = instances };
             })
             .ToList();
 
@@ -153,11 +153,18 @@ public class ActualService : IActualService
             return;
 
         Console.WriteLine("{0:O} [OnSync] Getting main monitor brightness...", DateTime.Now);
-        var mainOptions = optionsAndInstances[0].MonitorOptions;
 
+        var mainOptions = optionsAndInstances[0].MonitorOptions;
         var mainInstance = optionsAndInstances[0].Instances[0];
+        optionsAndInstances[0].Instances.RemoveAt(0);
 
         var currentBrightness = mainInstance.Brightness;
+
+        if (optionsAndInstances.Sum(x => x.Instances.Count) == 0)
+        {
+            Console.WriteLine("{0:O} [OnSync] Only one monitor exists, cancel sync...", DateTime.Now);
+            return;
+        }
 
         Console.WriteLine("{0:O} [OnSync] Main monitor brightness set to {1}", DateTime.Now, currentBrightness);
 
@@ -178,18 +185,15 @@ public class ActualService : IActualService
         {
             var anotherOptions = optionsAndInstance.MonitorOptions;
 
-            var anotherBrightness = (byte) (anotherOptions.Min +
+            var anotherBrightness = (byte)(anotherOptions.Min +
                                             (anotherOptions.Max - anotherOptions.Min) * (newBrightness - mainOptions.Min) /
                                             (mainOptions.Max - mainOptions.Min));
 
             foreach (var anotherInstance in optionsAndInstance.Instances)
             {
-                if (anotherInstance != mainInstance)
-                {
-                    Console.WriteLine("{0:O} [OnSync] Updating another monitor brightness to {1}...", DateTime.Now, anotherBrightness);
+                Console.WriteLine("{0:O} [OnSync] Updating another monitor brightness to {1}...", DateTime.Now, anotherBrightness);
 
-                    anotherInstance.Brightness = anotherBrightness;
-                }
+                anotherInstance.Brightness = anotherBrightness;
             }
         }
 

@@ -10,85 +10,97 @@ internal class MonitorCollection : IDisposable
 {
     public MonitorCollection()
     {
-        _physicalMonitorDevices = new List<PhysicalMonitorDevice>();
-
-        _monitorInstances = new List<MonitorInstance>();
-        MonitorInstances = _monitorInstances.AsReadOnly();
-
         Refresh();
     }
 
-    private List<PhysicalMonitorDevice> _physicalMonitorDevices;
+    private readonly object _lock = new object();
+    private readonly List<PhysicalMonitorDevice> _physicalMonitorDevices = new List<PhysicalMonitorDevice>();
+    private readonly List<MonitorInstance> _monitorInstances = new List<MonitorInstance>();
 
-    private readonly List<MonitorInstance> _monitorInstances;
-    public IReadOnlyList<MonitorInstance> MonitorInstances { get; }
+    public IReadOnlyList<MonitorInstance> MonitorInstances
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return new List<MonitorInstance>(_monitorInstances).AsReadOnly();
+            }
+        }
+    }
 
     public void Refresh()
     {
-        Cleanup();
-
-        using var monitorIdSearcher = new ManagementObjectSearcher("\\\\.\\ROOT\\WMI", "SELECT * FROM WmiMonitorID");
-        using var monitorIdCollection = monitorIdSearcher.Get();
-
-        using var monitorBrightnessSearcher = new ManagementObjectSearcher("\\\\.\\ROOT\\WMI", "SELECT * FROM WmiMonitorBrightness");
-        using var monitorBrightnessCollection = monitorBrightnessSearcher.Get();
-        var monitorBrightnessObjects = monitorBrightnessCollection.Cast<ManagementObject>().ToList();
-
-        using var monitorBrightnessMethodsSearcher = new ManagementObjectSearcher("\\\\.\\ROOT\\WMI", "SELECT * FROM WmiMonitorBrightnessMethods");
-        using var monitorBrightnessMethodsCollection = monitorBrightnessMethodsSearcher.Get();
-        var monitorBrightnessMethodsObjects = monitorBrightnessMethodsCollection.Cast<ManagementObject>().ToList();
-
-        _physicalMonitorDevices = MonitorApi.GetPhysicalMonitorDevices();
-
-        foreach (var monitorIdObject in monitorIdCollection)
+        lock (_lock)
         {
-            var instanceName = (string)monitorIdObject.Properties["InstanceName"].Value;
 
-            var monitorBrightnessObject = monitorBrightnessObjects.SingleOrDefault(x => (string)x.Properties["InstanceName"].Value == instanceName);
-            var monitorBrightnessMethodsObject =
-                monitorBrightnessMethodsObjects.SingleOrDefault(x => (string)x.Properties["InstanceName"].Value == instanceName);
+            Cleanup();
 
-            if (monitorBrightnessObject != null && monitorBrightnessMethodsObject != null)
+            using var monitorIdSearcher = new ManagementObjectSearcher("\\\\.\\ROOT\\WMI", "SELECT * FROM WmiMonitorID");
+            using var monitorIdCollection = monitorIdSearcher.Get();
+
+            using var monitorBrightnessSearcher = new ManagementObjectSearcher("\\\\.\\ROOT\\WMI", "SELECT * FROM WmiMonitorBrightness");
+            using var monitorBrightnessCollection = monitorBrightnessSearcher.Get();
+            var monitorBrightnessObjects = monitorBrightnessCollection.Cast<ManagementObject>().ToList();
+
+            using var monitorBrightnessMethodsSearcher = new ManagementObjectSearcher("\\\\.\\ROOT\\WMI", "SELECT * FROM WmiMonitorBrightnessMethods");
+            using var monitorBrightnessMethodsCollection = monitorBrightnessMethodsSearcher.Get();
+            var monitorBrightnessMethodsObjects = monitorBrightnessMethodsCollection.Cast<ManagementObject>().ToList();
+
+            _physicalMonitorDevices.AddRange(MonitorApi.GetPhysicalMonitorDevices());
+
+            foreach (var monitorIdObject in monitorIdCollection)
             {
-                _monitorInstances.Add(new WmiMonitorInstance(
-                    instanceName,
-                    monitorIdObject.Properties["ManufacturerName"].ReadStringFromUInt16ArrayValue(),
-                    monitorIdObject.Properties["ProductCodeID"].ReadStringFromUInt16ArrayValue(),
-                    monitorIdObject.Properties["SerialNumberID"].ReadStringFromUInt16ArrayValue()));
-            }
-            else
-            {
-                var deviceId = instanceName.EndsWith("_0")
-                    ? "\\\\?\\" + instanceName.Substring(0, instanceName.Length - 2).Replace("\\", "#") + "#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}"
-                    : throw new NotSupportedException("Check this case!");
+                var instanceName = (string)monitorIdObject.Properties["InstanceName"].Value;
 
-                var physicalMonitorDevice = _physicalMonitorDevices.Find(x => x.DeviceId == deviceId);
+                var monitorBrightnessObject = monitorBrightnessObjects.SingleOrDefault(x => (string)x.Properties["InstanceName"].Value == instanceName);
+                var monitorBrightnessMethodsObject =
+                    monitorBrightnessMethodsObjects.SingleOrDefault(x => (string)x.Properties["InstanceName"].Value == instanceName);
 
-                if (physicalMonitorDevice != null)
+                if (monitorBrightnessObject != null && monitorBrightnessMethodsObject != null)
                 {
-                    _monitorInstances.Add(new PmdMonitorInstance(
+                    _monitorInstances.Add(new WmiMonitorInstance(
                         instanceName,
                         monitorIdObject.Properties["ManufacturerName"].ReadStringFromUInt16ArrayValue(),
                         monitorIdObject.Properties["ProductCodeID"].ReadStringFromUInt16ArrayValue(),
-                        monitorIdObject.Properties["SerialNumberID"].ReadStringFromUInt16ArrayValue(),
-                        physicalMonitorDevice));
+                        monitorIdObject.Properties["SerialNumberID"].ReadStringFromUInt16ArrayValue()));
                 }
+                else
+                {
+                    var deviceId = instanceName.EndsWith("_0")
+                        ? "\\\\?\\" + instanceName.Substring(0, instanceName.Length - 2).Replace("\\", "#") + "#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}"
+                        : throw new NotSupportedException("Check this case!");
+
+                    var physicalMonitorDevice = _physicalMonitorDevices.Find(x => x.DeviceId == deviceId);
+
+                    if (physicalMonitorDevice != null)
+                    {
+                        _monitorInstances.Add(new PmdMonitorInstance(
+                            instanceName,
+                            monitorIdObject.Properties["ManufacturerName"].ReadStringFromUInt16ArrayValue(),
+                            monitorIdObject.Properties["ProductCodeID"].ReadStringFromUInt16ArrayValue(),
+                            monitorIdObject.Properties["SerialNumberID"].ReadStringFromUInt16ArrayValue(),
+                            physicalMonitorDevice));
+                    }
+                }
+
+                monitorIdObject.Dispose();
             }
 
-            monitorIdObject.Dispose();
+            foreach (var monitorBrightnessObject in monitorBrightnessObjects)
+                monitorBrightnessObject.Dispose();
+            foreach (var monitorBrightnessMethodsObject in monitorBrightnessMethodsObjects)
+                monitorBrightnessMethodsObject.Dispose();
         }
-
-        foreach (var monitorBrightnessObject in monitorBrightnessObjects)
-            monitorBrightnessObject.Dispose();
-        foreach (var monitorBrightnessMethodsObject in monitorBrightnessMethodsObjects)
-            monitorBrightnessMethodsObject.Dispose();
     }
 
     private EventHandler<MonitorInstance>? _brightnessChanged;
 
     private void OnBrightnessEventArrived(object sender, EventArrivedEventArgs e)
     {
-        _brightnessChanged?.Invoke(this, _monitorInstances.Single(x => x.InstanceName == (string)e.NewEvent.Properties["InstanceName"].Value));
+        var monitorInstance = _monitorInstances.SingleOrDefault(x => x.InstanceName == (string)e.NewEvent.Properties["InstanceName"].Value);
+
+        if (monitorInstance != null)
+            _brightnessChanged?.Invoke(this, monitorInstance);
     }
 
     private ManagementEventWatcher? _brightnessEventWatcher;
@@ -167,6 +179,9 @@ internal class MonitorCollection : IDisposable
 
     public void Dispose()
     {
-        Cleanup();
+        lock (_lock)
+        {
+            Cleanup();
+        }
     }
 }
