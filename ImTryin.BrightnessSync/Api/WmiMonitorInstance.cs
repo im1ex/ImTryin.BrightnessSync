@@ -14,14 +14,14 @@ internal class WmiMonitorInstance : MonitorInstance
         get
         {
             using var monitorBrightnessObject
-                = new ManagementObject(@"\\DESKTOP-EF2KRJU\ROOT\WMI:WmiMonitorBrightness.InstanceName=""" + InstanceName.Replace(@"\", @"\\") + @"""");
+                = new ManagementObject(@"\\.\ROOT\WMI:WmiMonitorBrightness.InstanceName=""" + InstanceName.Replace(@"\", @"\\") + @"""");
 
             return (byte)monitorBrightnessObject.Properties["CurrentBrightness"].Value;
         }
         set
         {
             using var monitorBrightnessMethodsObject
-                = new ManagementObject(@"\\DESKTOP-EF2KRJU\ROOT\WMI:WmiMonitorBrightnessMethods.InstanceName=""" + InstanceName.Replace(@"\", @"\\") + @"""");
+                = new ManagementObject(@"\\.\ROOT\WMI:WmiMonitorBrightnessMethods.InstanceName=""" + InstanceName.Replace(@"\", @"\\") + @"""");
 
             monitorBrightnessMethodsObject.InvokeMethod("WmiSetBrightness", new object[] { 1 /* timeout in seconds */, value });
         }
