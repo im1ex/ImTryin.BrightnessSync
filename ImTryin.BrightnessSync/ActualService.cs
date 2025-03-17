@@ -1,19 +1,19 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using ImTryin.BrightnessSync.Api;
-using ImTryin.BrightnessSync.AppSettings;
+using ImTryin.BrightnessSync.Settings;
 using ImTryin.WindowsConsoleService;
 
 namespace ImTryin.BrightnessSync;
 
 public class ActualService : IActualService
 {
-    private List<MonitorOptions>? _appSettings;
+    private AppSettings? _appSettings;
     private MonitorCollection? _monitorCollection;
     private bool _refresh;
     private Timer? _timer;
@@ -29,9 +29,9 @@ public class ActualService : IActualService
         }
 
         using (var fileStream = File.OpenRead(appSettingsPath))
-            _appSettings = JsonSerializer.Deserialize<List<MonitorOptions>>(fileStream);
+            _appSettings = JsonSerializer.Deserialize<AppSettings>(fileStream, new JsonSerializerOptions { PreferredObjectCreationHandling = JsonObjectCreationHandling.Populate });
 
-        if (_appSettings == null || _appSettings.Count == 0)
+        if (_appSettings == null || (_appSettings.Monitors.Count == 0 && _appSettings.Profiles.Count == 0))
         {
             GenerateDummyConfig(appSettingsPath);
 
@@ -76,18 +76,33 @@ public class ActualService : IActualService
 
     private void GenerateDummyConfig(string appSettingsPath)
     {
-        var appSettings = new List<MonitorOptions>();
+        var appSettings = new AppSettings();
 
         using var monitorCollection = new MonitorCollection();
         foreach (var monitorInstance in monitorCollection.MonitorInstances)
         {
-            appSettings.Add(new MonitorOptions
+            if (monitorInstance.IsInternal)
+                continue;
+
+            appSettings.Monitors.Add(monitorInstance.UserFriendlyName, new()
             {
                 ManufacturerName = monitorInstance.ManufacturerName,
                 ProductCodeId = monitorInstance.ProductCodeId,
                 SerialNumberId = monitorInstance.SerialNumberId
             });
         }
+
+        var profileKey = string.Join("+",
+                monitorCollection.MonitorInstances
+                    .Where(mi => !mi.IsInternal)
+                    .Select(mi => mi.UserFriendlyName));
+        var profile = monitorCollection.MonitorInstances
+                    .Where(mi => !mi.IsInternal)
+                    .ToDictionary(mi => mi.UserFriendlyName, _ => ProfileSettings.Default);
+        profile.Add(AppSettings.InternalMonitorKey, ProfileSettings.Default);
+        profile.Add(AppSettings.DefaultMonitorKey, ProfileSettings.Default);
+
+        appSettings.Profiles.Add(profileKey, profile);
 
         using (var fileStream = File.Create(appSettingsPath))
             JsonSerializer.Serialize(fileStream, appSettings, new JsonSerializerOptions { WriteIndented = true });
@@ -104,7 +119,7 @@ public class ActualService : IActualService
 
     private void OnDeviceChanged(object sender, EventArgs e)
     {
-        Console.WriteLine("{0:O} [DeviceChanged] Waiting 3 sec before sync...", DateTime.Now);
+        Console.WriteLine("{0:O} [DeviceChanged] {1} Waiting 3 sec before sync...", DateTime.Now, e);
 
         _refresh = true;
 
@@ -115,86 +130,88 @@ public class ActualService : IActualService
     {
         Console.WriteLine("{0:O} [OnSync] Started...", DateTime.Now);
 
+        var appSettings = _appSettings!;
+        var monitorCollection = _monitorCollection!;
+
         if (_refresh)
         {
-            _monitorCollection!.Refresh();
+            monitorCollection.Refresh();
 
             _refresh = false;
         }
 
-        var usedInstanceNames = new HashSet<string>();
-
-        var optionsAndInstances = _appSettings!
-            .Select(monitorOptions =>
-            {
-                var instances = new List<MonitorInstance>();
-
-                foreach (var monitorInstance in _monitorCollection!.MonitorInstances)
-                {
-                    var instanceName = monitorInstance.InstanceName;
-
-                    if (usedInstanceNames.Contains(instanceName))
-                        continue;
-
-                    if (monitorInstance.ManufacturerName.Contains(monitorOptions.ManufacturerName) &&
-                        monitorInstance.ProductCodeId.Contains(monitorOptions.ProductCodeId) &&
-                        monitorInstance.SerialNumberId.Contains(monitorOptions.SerialNumberId))
-                    {
-                        usedInstanceNames.Add(instanceName);
-                        instances.Add(monitorInstance);
-                    }
-                }
-
-                return new { MonitorOptions = monitorOptions, Instances = instances };
-            })
-            .ToList();
-
-        if (optionsAndInstances.Count == 0 || optionsAndInstances[0].Instances.Count == 0)
-            return;
-
-        Console.WriteLine("{0:O} [OnSync] Getting main monitor brightness...", DateTime.Now);
-
-        var mainOptions = optionsAndInstances[0].MonitorOptions;
-        var mainInstance = optionsAndInstances[0].Instances[0];
-        optionsAndInstances[0].Instances.RemoveAt(0);
-
-        var currentBrightness = mainInstance.Brightness;
-
-        if (optionsAndInstances.Sum(x => x.Instances.Count) == 0)
+        if (monitorCollection.MonitorInstances.Count <= 1)
         {
-            Console.WriteLine("{0:O} [OnSync] Only one monitor exists, cancel sync...", DateTime.Now);
+            Console.WriteLine("{0:O} [OnSync] Only one (or zero) monitor exists, cancel sync...", DateTime.Now);
             return;
         }
 
-        Console.WriteLine("{0:O} [OnSync] Main monitor brightness set to {1}", DateTime.Now, currentBrightness);
+        var monitors = monitorCollection.MonitorInstances.Select(mi => (
+            MonitorInstance: mi,
+            Key: (string?)appSettings.Monitors.FirstOrDefault(m =>
+                mi.ManufacturerName.Contains(m.Value.ManufacturerName) &&
+                mi.ProductCodeId.Contains(m.Value.ProductCodeId) &&
+                mi.SerialNumberId.Contains(m.Value.SerialNumberId)).Key));
 
-        var newBrightness = currentBrightness < mainOptions.Min
-            ? mainOptions.Min
-            : mainOptions.Max < currentBrightness
-                ? mainOptions.Max
+        var profile = appSettings.Profiles.Select(p => (
+            Profile: p,
+            FitScore: monitors.Select(m =>
+            {
+                if (m.MonitorInstance.IsInternal)
+                    return p.Value.ContainsKey(AppSettings.InternalMonitorKey) ? 100 : 0;
+
+                return m.Key != null && p.Value.ContainsKey(m.Key) ? 100 : p.Value.ContainsKey(AppSettings.DefaultMonitorKey) ? 10 : 0;
+            })
+            .Sum()))
+            .OrderByDescending(x => x.FitScore)
+            .First().Profile;
+
+        ProfileSettings getProfileSettings(string monitorKey)
+        {
+            return profile.Value.TryGetValue(monitorKey, out var profileSetting)
+                ? profileSetting
+                : profile.Value.TryGetValue(AppSettings.DefaultMonitorKey, out profileSetting)
+                ? profileSetting
+                : new();
+        }
+
+        Console.WriteLine("{0:O} [OnSync] \"{1}\" profile selected. Getting main monitor brightness...", DateTime.Now, profile.Key);
+
+        var internalMonitor = monitors.First(m => m.MonitorInstance.IsInternal);
+
+        var currentBrightness = internalMonitor.MonitorInstance.Brightness;
+
+        Console.WriteLine("{0:O} [OnSync] \"{1}\" profile selected. \"{2}\" monitor brightness set to {3}", DateTime.Now, profile.Key, internalMonitor.Key, currentBrightness);
+
+        var internalProfileSettings = getProfileSettings(AppSettings.InternalMonitorKey);
+
+        var newBrightness = currentBrightness < internalProfileSettings.Min
+            ? internalProfileSettings.Min
+            : internalProfileSettings.Max < currentBrightness
+                ? internalProfileSettings.Max
                 : currentBrightness;
 
         if (newBrightness != currentBrightness)
         {
-            Console.WriteLine("{0:O} [OnSync] Updating main monitor brightness to {1}...", DateTime.Now, newBrightness);
+            Console.WriteLine("{0:O} [OnSync] \"{1}\" profile selected. Updating \"{2}\" monitor brightness to {3}...", DateTime.Now, profile.Key, internalMonitor.Key, newBrightness);
 
-            mainInstance.Brightness = newBrightness;
+            internalMonitor.MonitorInstance.Brightness = newBrightness;
         }
 
-        foreach (var optionsAndInstance in optionsAndInstances)
+        foreach (var monitor in monitors)
         {
-            var anotherOptions = optionsAndInstance.MonitorOptions;
+            if (monitor.MonitorInstance == internalMonitor.MonitorInstance)
+                continue;
 
-            var anotherBrightness = (byte)(anotherOptions.Min +
-                                            (anotherOptions.Max - anotherOptions.Min) * (newBrightness - mainOptions.Min) /
-                                            (mainOptions.Max - mainOptions.Min));
+            var profileSettings = getProfileSettings(monitor.Key ?? AppSettings.DefaultMonitorKey);
 
-            foreach (var anotherInstance in optionsAndInstance.Instances)
-            {
-                Console.WriteLine("{0:O} [OnSync] Updating another monitor brightness to {1}...", DateTime.Now, anotherBrightness);
+            var anotherBrightness = (byte)(profileSettings.Min +
+                                            (profileSettings.Max - profileSettings.Min) * (newBrightness - internalProfileSettings.Min) /
+                                            (internalProfileSettings.Max - internalProfileSettings.Min));
 
-                anotherInstance.Brightness = anotherBrightness;
-            }
+            Console.WriteLine("{0:O} [OnSync] \"{1}\" profile selected. Updating \"{2}\" monitor brightness to {3}...", DateTime.Now, profile.Key, monitor.Key, anotherBrightness);
+
+            monitor.MonitorInstance.Brightness = anotherBrightness;
         }
 
         Console.WriteLine("{0:O} [OnSync] Finished!", DateTime.Now);

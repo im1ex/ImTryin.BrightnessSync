@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "ImTryin.BrightnessSync": {
+      "commandName": "Project",
+      "commandLineArgs": "/manual"
+    }
+  }
+}

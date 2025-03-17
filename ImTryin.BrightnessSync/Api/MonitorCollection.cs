@@ -32,11 +32,14 @@ internal class MonitorCollection : IDisposable
     {
         lock (_lock)
         {
-
             Cleanup();
 
             using var monitorIdSearcher = new ManagementObjectSearcher("\\\\.\\ROOT\\WMI", "SELECT * FROM WmiMonitorID");
             using var monitorIdCollection = monitorIdSearcher.Get();
+
+            using var monitorConnectionParamsSearcher = new ManagementObjectSearcher("\\\\.\\ROOT\\WMI", "SELECT * FROM WmiMonitorConnectionParams");
+            using var monitorConnectionParamsCollection = monitorConnectionParamsSearcher.Get();
+            var monitorConnectionParamsObjects = monitorConnectionParamsCollection.Cast<ManagementObject>().ToList();
 
             using var monitorBrightnessSearcher = new ManagementObjectSearcher("\\\\.\\ROOT\\WMI", "SELECT * FROM WmiMonitorBrightness");
             using var monitorBrightnessCollection = monitorBrightnessSearcher.Get();
@@ -52,9 +55,11 @@ internal class MonitorCollection : IDisposable
             {
                 var instanceName = (string)monitorIdObject.Properties["InstanceName"].Value;
 
+                var monitorConnectionParamsObject = monitorConnectionParamsObjects.SingleOrDefault(x => (string)x.Properties["InstanceName"].Value == instanceName);
+                var isInternal = (uint?)monitorConnectionParamsObject?.Properties["VideoOutputTechnology"].Value == MonitorApi.D3DKMDT_VOT_INTERNAL;
+
                 var monitorBrightnessObject = monitorBrightnessObjects.SingleOrDefault(x => (string)x.Properties["InstanceName"].Value == instanceName);
-                var monitorBrightnessMethodsObject =
-                    monitorBrightnessMethodsObjects.SingleOrDefault(x => (string)x.Properties["InstanceName"].Value == instanceName);
+                var monitorBrightnessMethodsObject = monitorBrightnessMethodsObjects.SingleOrDefault(x => (string)x.Properties["InstanceName"].Value == instanceName);
 
                 if (monitorBrightnessObject != null && monitorBrightnessMethodsObject != null)
                 {
@@ -62,7 +67,9 @@ internal class MonitorCollection : IDisposable
                         instanceName,
                         monitorIdObject.Properties["ManufacturerName"].ReadStringFromUInt16ArrayValue(),
                         monitorIdObject.Properties["ProductCodeID"].ReadStringFromUInt16ArrayValue(),
-                        monitorIdObject.Properties["SerialNumberID"].ReadStringFromUInt16ArrayValue()));
+                        monitorIdObject.Properties["SerialNumberID"].ReadStringFromUInt16ArrayValue(),
+                        monitorIdObject.Properties["UserFriendlyName"].ReadStringFromUInt16ArrayValue(),
+                        isInternal));
                 }
                 else
                 {
@@ -79,6 +86,8 @@ internal class MonitorCollection : IDisposable
                             monitorIdObject.Properties["ManufacturerName"].ReadStringFromUInt16ArrayValue(),
                             monitorIdObject.Properties["ProductCodeID"].ReadStringFromUInt16ArrayValue(),
                             monitorIdObject.Properties["SerialNumberID"].ReadStringFromUInt16ArrayValue(),
+                            monitorIdObject.Properties["UserFriendlyName"].ReadStringFromUInt16ArrayValue(),
+                            isInternal,
                             physicalMonitorDevice));
                     }
                 }
@@ -86,6 +95,8 @@ internal class MonitorCollection : IDisposable
                 monitorIdObject.Dispose();
             }
 
+            foreach (var monitorConnectionParamsObject in monitorConnectionParamsObjects)
+                monitorConnectionParamsObject.Dispose();
             foreach (var monitorBrightnessObject in monitorBrightnessObjects)
                 monitorBrightnessObject.Dispose();
             foreach (var monitorBrightnessMethodsObject in monitorBrightnessMethodsObjects)
@@ -136,10 +147,14 @@ internal class MonitorCollection : IDisposable
 
     private void OnDeviceChangeEventArrived(object sender, EventArrivedEventArgs e)
     {
-        _deviceChanged?.Invoke(this, EventArgs.Empty);
+        //var targetInstance = e.NewEvent["TargetInstance"] as ManagementBaseObject;
+        _deviceChanged?.Invoke(this, e);
     }
 
     private ManagementEventWatcher? _deviceChangeEventWatcher;
+
+    //private TimeSpan DeviceChangedInterval
+    //public TimeSpan DeviceChangedInterval {get; set;}
 
     public event EventHandler DeviceChanged
     {
@@ -149,7 +164,14 @@ internal class MonitorCollection : IDisposable
 
             if (_deviceChangeEventWatcher == null)
             {
-                _deviceChangeEventWatcher = new ManagementEventWatcher("\\\\.\\ROOT\\CIMV2", "SELECT * FROM Win32_DeviceChangeEvent");
+                _deviceChangeEventWatcher = new ManagementEventWatcher(
+                    new ManagementScope("\\\\.\\ROOT\\CIMV2"),
+                    new WqlEventQuery
+                    {
+                        EventClassName = "__InstanceOperationEvent",
+                        Condition = @"TargetInstance ISA 'Win32_DesktopMonitor'",
+                        WithinInterval = new TimeSpan(0, 0, 3)
+                    });
                 _deviceChangeEventWatcher.EventArrived += OnDeviceChangeEventArrived;
                 _deviceChangeEventWatcher.Start();
             }

@@ -2,9 +2,9 @@
 
 internal class PmdMonitorInstance : MonitorInstance
 {
-    public PmdMonitorInstance(string instanceName, string manufacturerName, string productCodeId, string serialNumberId,
+    public PmdMonitorInstance(string instanceName, string manufacturerName, string productCodeId, string serialNumberId, string userFriendlyName, bool isInternal,
         PhysicalMonitorDevice physicalMonitorDevice)
-        : base(instanceName, manufacturerName, productCodeId, serialNumberId)
+        : base(instanceName, manufacturerName, productCodeId, serialNumberId, userFriendlyName, isInternal)
     {
         _physicalMonitorDevice = physicalMonitorDevice;
     }
@@ -13,11 +13,7 @@ internal class PmdMonitorInstance : MonitorInstance
 
     public override byte Brightness
     {
-        get
-        {
-            MonitorApi.GetMonitorBrightness(_physicalMonitorDevice.PhysicalMonitorHandle, out _, out var currentBrightness, out _);
-            return (byte)currentBrightness;
-        }
-        set { MonitorApi.SetMonitorBrightness(_physicalMonitorDevice.PhysicalMonitorHandle, value); }
+        get { return (byte)MonitorApi.GetMonitorBrightnessWithRetries(_physicalMonitorDevice.PhysicalMonitorHandle).Current; }
+        set { MonitorApi.SetMonitorBrightnessWithRetries(_physicalMonitorDevice.PhysicalMonitorHandle, value); }
     }
 }

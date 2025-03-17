@@ -8,7 +8,9 @@ public static class PropertyDataExtensions
 {
     public static string ReadStringFromUInt16ArrayValue(this PropertyData propertyData)
     {
-        var chars = (ushort[]) propertyData.Value;
+        var chars = (ushort[]?) propertyData.Value;
+        if (chars == null)
+            return string.Empty;
 
         var stringBuilder = new StringBuilder(chars.Length);
 

@@ -4,8 +4,8 @@ namespace ImTryin.BrightnessSync.Api;
 
 internal class WmiMonitorInstance : MonitorInstance
 {
-    public WmiMonitorInstance(string instanceName, string manufacturerName, string productCodeId, string serialNumberId)
-        : base(instanceName, manufacturerName, productCodeId, serialNumberId)
+    public WmiMonitorInstance(string instanceName, string manufacturerName, string productCodeId, string serialNumberId, string userFriendlyName, bool isInternal)
+        : base(instanceName, manufacturerName, productCodeId, serialNumberId, userFriendlyName, isInternal)
     {
     }
 

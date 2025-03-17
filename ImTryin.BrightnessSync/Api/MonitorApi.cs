@@ -3,11 +3,14 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 namespace ImTryin.BrightnessSync.Api;
 
 internal static class MonitorApi
 {
+    public const uint D3DKMDT_VOT_INTERNAL = 0x80000000u;
+
     #region EnumDisplayDevices
 
     private readonly struct DisplayDevice
@@ -60,8 +63,8 @@ internal static class MonitorApi
             if ((ushort.MaxValue - 1) >> 1 < s.Length)
                 throw new ArgumentOutOfRangeException(nameof(s));
 
-            Length = (ushort) (s.Length << 1);
-            MaximumLength = (ushort) (Length + 2);
+            Length = (ushort)(s.Length << 1);
+            MaximumLength = (ushort)(Length + 2);
             Buffer = s;
         }
     }
@@ -146,9 +149,36 @@ internal static class MonitorApi
 
 
     [DllImport("Dxva2.dll", SetLastError = true)]
-    public static extern bool GetMonitorBrightness(IntPtr physicalMonitorHandle, out int minimumBrightness, out int currentBrightness,
-        out int maximumBrightness);
+    public static extern bool GetMonitorBrightness(IntPtr physicalMonitorHandle, out int minimum, out int current, out int maximum);
 
     [DllImport("Dxva2.dll", SetLastError = true)]
-    public static extern bool SetMonitorBrightness(IntPtr physicalMonitorHandle, int newBrightness);
+    public static extern bool SetMonitorBrightness(IntPtr physicalMonitorHandle, int value);
+
+    private const int RetryIntervalMs = 100;
+    private const int MaxRetries = 10;
+
+    public static (int Minimum, int Current, int Maximum) GetMonitorBrightnessWithRetries(IntPtr physicalMonitorHandle,
+        int retryIntervalMs = RetryIntervalMs, int maxRetries = MaxRetries)
+    {
+        int minimum, current, maximum, retries = 0;
+        while (!GetMonitorBrightness(physicalMonitorHandle, out minimum, out current, out maximum))
+        {
+            if (++retries >= maxRetries)
+                throw new Exception();
+            Thread.Sleep(retryIntervalMs);
+        }
+        return (minimum, current, maximum);
+    }
+
+    public static void SetMonitorBrightnessWithRetries(IntPtr physicalMonitorHandle, int value,
+        int retryIntervalMs = RetryIntervalMs, int maxRetries = MaxRetries)
+    {
+        var retries = 0;
+        while (!SetMonitorBrightness(physicalMonitorHandle, value))
+        {
+            if (++retries >= maxRetries)
+                throw new Exception();
+            Thread.Sleep(retryIntervalMs);
+        }
+    }
 }
