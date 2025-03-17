@@ -100,7 +100,7 @@ public class ActualService : IActualService
                     .Where(mi => !mi.IsInternal)
                     .ToDictionary(mi => mi.UserFriendlyName, _ => ProfileSettings.Default);
         profile.Add(AppSettings.InternalMonitorKey, ProfileSettings.Default);
-        profile.Add(AppSettings.DefaultMonitorKey, ProfileSettings.Default);
+        profile.Add(AppSettings.FallbackMonitorKey, ProfileSettings.Default);
 
         appSettings.Profiles.Add(profileKey, profile);
 
@@ -148,10 +148,14 @@ public class ActualService : IActualService
 
         var monitors = monitorCollection.MonitorInstances.Select(mi => (
             MonitorInstance: mi,
-            Key: (string?)appSettings.Monitors.FirstOrDefault(m =>
-                mi.ManufacturerName.Contains(m.Value.ManufacturerName) &&
-                mi.ProductCodeId.Contains(m.Value.ProductCodeId) &&
-                mi.SerialNumberId.Contains(m.Value.SerialNumberId)).Key));
+            Key: appSettings.Monitors
+                .Where(m =>
+                    mi.ManufacturerName.Contains(m.Value.ManufacturerName) &&
+                    mi.ProductCodeId.Contains(m.Value.ProductCodeId) &&
+                    mi.SerialNumberId.Contains(m.Value.SerialNumberId))
+                .Select(m => m.Key)
+                .DefaultIfEmpty(mi.IsInternal ? AppSettings.InternalMonitorKey : AppSettings.FallbackMonitorKey)
+                .First()));
 
         var profile = appSettings.Profiles.Select(p => (
             Profile: p,
@@ -160,7 +164,7 @@ public class ActualService : IActualService
                 if (m.MonitorInstance.IsInternal)
                     return p.Value.ContainsKey(AppSettings.InternalMonitorKey) ? 100 : 0;
 
-                return m.Key != null && p.Value.ContainsKey(m.Key) ? 100 : p.Value.ContainsKey(AppSettings.DefaultMonitorKey) ? 10 : 0;
+                return m.Key != null && p.Value.ContainsKey(m.Key) ? 100 : p.Value.ContainsKey(AppSettings.FallbackMonitorKey) ? 10 : 0;
             })
             .Sum()))
             .OrderByDescending(x => x.FitScore)
@@ -170,12 +174,12 @@ public class ActualService : IActualService
         {
             return profile.Value.TryGetValue(monitorKey, out var profileSetting)
                 ? profileSetting
-                : profile.Value.TryGetValue(AppSettings.DefaultMonitorKey, out profileSetting)
+                : profile.Value.TryGetValue(AppSettings.FallbackMonitorKey, out profileSetting)
                 ? profileSetting
                 : new();
         }
 
-        Console.WriteLine("{0:O} [OnSync] \"{1}\" profile selected. Getting main monitor brightness...", DateTime.Now, profile.Key);
+        Console.WriteLine("{0:O} [OnSync] \"{1}\" profile selected. Getting internal monitor brightness...", DateTime.Now, profile.Key);
 
         var internalMonitor = monitors.First(m => m.MonitorInstance.IsInternal);
 
@@ -203,7 +207,7 @@ public class ActualService : IActualService
             if (monitor.MonitorInstance == internalMonitor.MonitorInstance)
                 continue;
 
-            var profileSettings = getProfileSettings(monitor.Key ?? AppSettings.DefaultMonitorKey);
+            var profileSettings = getProfileSettings(monitor.Key ?? AppSettings.FallbackMonitorKey);
 
             var anotherBrightness = (byte)(profileSettings.Min +
                                             (profileSettings.Max - profileSettings.Min) * (newBrightness - internalProfileSettings.Min) /

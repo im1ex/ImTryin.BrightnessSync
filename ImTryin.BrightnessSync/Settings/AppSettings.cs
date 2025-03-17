@@ -5,7 +5,7 @@ namespace ImTryin.BrightnessSync.Settings;
 public class AppSettings
 {
     public const string InternalMonitorKey = "Internal";
-    public const string DefaultMonitorKey = "Default";
+    public const string FallbackMonitorKey = "Fallback";
 
     public Dictionary<string, MonitorSettings> Monitors { get; } = new Dictionary<string, MonitorSettings>();
 
